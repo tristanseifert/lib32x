@@ -20,7 +20,8 @@
 #define MAX_NUM_SAMPLES_BUFFER MAX_NUM_SAMPLES/2
 
 extern uint16 lib32x_pwm_num_samples;
-extern int16 snd_buffer[];
+extern int16 lib32x_pwm_snd_buffer[];
+extern uint16 vblankOcurred;
 
 void decompress_slz(uint8 *, const uint8 *);
 void decompress_slz24(uint8 *, const uint8 *);
@@ -39,6 +40,13 @@ extern int lib32x_set_sh2_sr(int level);
 extern void lib32x_clear_sample_mem(int16 *buffer, int16 numSamples);
 extern void lib32x_signal_master_init_ok();
 extern void lib32x_slave_wait_master_init_ok();
+
+// You have the option of calling this from either assembly VBI or from C code.
+extern void lib32x_vbi_handler_flag();
+
+extern void lib32x_waitForVBlank();
+
+void lib32x_draw_rectangle(int x1, int y1, int x2, int y2, uint8 colour);
 
 // You *must* define this function somewhere in your code for the driver to work.
 extern void pwm_fill_buffer(int16 *buffer);

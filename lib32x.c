@@ -164,34 +164,32 @@ inline void cache_purge() {
 uint16 lib32x_pwm_num_samples = 441;
 
 #ifdef LIB32X_PWM_ENABLED
-int16 __attribute__((aligned(16))) snd_buffer[MAX_NUM_SAMPLES*2*2]; // each sample is 2 channels; we need data for 2 buffers
+int16 __attribute__((aligned(16))) lib32x_pwm_snd_buffer[MAX_NUM_SAMPLES*2*2]; // each sample is 2 channels; we need data for 2 buffers
 #endif
 
 void lib32x_pwm_dma1_handler() {
-    static int32 which = 0; 
-
-//  while (MARS_SYS_COMM6 == MIXER_LOCK_MSH2) ; // locked by MSH2 
+    static int32 lib32x_pwm_current_dma_buffer = 0; 
 
     SH2_DMA_CHCR1; // read TE 
     SH2_DMA_CHCR1 = 0; // clear TE 
 
-    if (which) { 
+    if (lib32x_pwm_current_dma_buffer) { 
         // start DMA on first buffer and fill second 
-        SH2_DMA_SAR1 = ((uint32)&snd_buffer[0]) | 0x20000000; 
+        SH2_DMA_SAR1 = ((int32)&lib32x_pwm_snd_buffer[0]) | 0x20000000; 
         SH2_DMA_TCR1 = lib32x_pwm_num_samples; // number longs 
         SH2_DMA_CHCR1 = 0x18E5; // dest fixed, src incr, size long, ext req, dack mem to dev, dack hi, dack edge, dreq rising edge, cycle-steal, dual addr, intr enabled, clear TE, dma enabled 
 
-        pwm_fill_buffer(&snd_buffer[MAX_NUM_SAMPLES * 2]); 
+        pwm_fill_buffer(&lib32x_pwm_snd_buffer[MAX_NUM_SAMPLES * 2]); 
     } else { 
         // start DMA on second buffer and fill first 
-        SH2_DMA_SAR1 = ((uint32)&snd_buffer[MAX_NUM_SAMPLES * 2]) | 0x20000000; 
+        SH2_DMA_SAR1 = ((int32)&lib32x_pwm_snd_buffer[MAX_NUM_SAMPLES * 2]) | 0x20000000; 
         SH2_DMA_TCR1 = lib32x_pwm_num_samples; // number longs 
         SH2_DMA_CHCR1 = 0x18E5; // dest fixed, src incr, size long, ext req, dack mem to dev, dack hi, dack edge, dreq rising edge, cycle-steal, dual addr, intr enabled, clear TE, dma enabled 
 
-        pwm_fill_buffer(&snd_buffer[0]); 
+        pwm_fill_buffer(&lib32x_pwm_snd_buffer[0]); 
     } 
 
-    which ^= 1; // flip audio buffer
+    lib32x_pwm_current_dma_buffer ^= 1; // flip audio buffer 
 }
 
 void lib32x_pwm_init() { 
@@ -212,6 +210,8 @@ void lib32x_pwm_init() {
 
     SH2_DMA_VCR1 = 72; // set exception vector for DMA channel 1 
     SH2_INT_IPRA = (SH2_INT_IPRA & 0xF0FF) | 0x0F00; // set DMA INT to priority 15 
+	
+    MARS_SYS_INTMSK = MARS_SYS_INTMSK | 0x0F; // Enable V/H/PWM/CMD/int
 
     // init the sound hardware 
     MARS_PWM_M_PULSE_W = 1; 
@@ -227,20 +227,24 @@ void lib32x_pwm_init() {
     MARS_PWM_CTRL = MARS_PWM_LEFT_L | MARS_PWM_RIGHT_R | MARS_PWM_DREQ1 | 0x0100; // TM = 1, RTP, RMD = right, LMD = left 
 
     sample = SAMPLE_MIN; 
+    
     /* ramp up to SAMPLE_CENTER to avoid click in audio (real 32X) */ 
     while (sample < SAMPLE_CENTER) { 
         for (ix=0; ix<(SAMPLE_RATE*2)/(SAMPLE_CENTER - SAMPLE_MIN); ix++) { 
-            while (MARS_PWM_M_PULSE_W & 0x8000) ; // wait while full 
+            while(MARS_PWM_M_PULSE_W & 0x8000) {
+            
+            } // wait while FIFO is full 
+            
             MARS_PWM_M_PULSE_W = sample; 
         } 
+        
         sample++; 
     } 
 
-    // initialize mixer 
-    pwm_fill_buffer(&snd_buffer[0]); // fill first buffer 
-    lib32x_pwm_dma1_handler(); // start DMA 
-
     lib32x_set_sh2_sr(2); 
+    
+    pwm_fill_buffer(&lib32x_pwm_snd_buffer[0]); // fill first buffer
+    lib32x_pwm_dma1_handler(); // start DMA 
 } 
 
 /*****************************************************************************************
@@ -284,4 +288,70 @@ void lib32x_sci_init(int master) {
 		SH2_SCI_BRR = 42;
     }
 
+}
+
+/*****************************************************************************************
+ * Routine to wait for VBlank — depends on a flag being set during VBI.					 *
+ ***************************************************************************************
+#define LIB32X_INT_STATE_REG (*(volatile unsigned short *)0x2603FF08)
+ 
+void lib32x_waitForVBlank() {
+	while((LIB32X_INT_STATE_REG & 0x0001) != 0x0001) {
+ 	
+ 	}
+ 	
+	LIB32X_INT_STATE_REG &= 0xFFFE; // Clear VBlank bit.
+}*/
+
+/*****************************************************************************************
+ * Rectangle drawing routine — uses direct access to current FB in 8bpp mode.			 *
+ *																						 *
+ * x1, y1: Top left corner of the rectangle to draw.									 *
+ * x2, y2: Bottom right corner of the rectangle to draw.								 *
+ * colour: 8-bit offset into the CRAM to identify what colour to draw — 0x00 is nothing. *
+ ****************************************************************************************/
+// Some optimisation couldn't hurt. =V
+void lib32x_draw_rectangle(int x1, int y1, int x2, int y2, uint8 colour) {
+	int d_x1, d_x2, d_y1, d_y2;
+	vu16 *dest, *last_dest; // Framebuffer destination
+	int i, j;
+	
+	if(x1 > x2) {
+		d_x1 = x2;
+		d_x2 = x1;
+		
+		d_y1 = y2;
+		d_y2 = y1;
+	} else {
+		d_x1 = x1;
+		d_x2 = x2;
+		
+		d_y1 = y1;
+		d_y2 = y2;
+	}
+
+	// set up 16-bit write pointer to framebuffer
+  	dest = (vu16 *) &MARS_FRAMEBUFFER;
+  	dest += d_y1 * 160; // Bytes per line, but divided by 2 since 16-bit access
+  	dest += 0x100; // Offset to skip the line table
+  	dest += d_x1 / 2;
+  	
+  	for(i = 0; i < (d_y2 - d_y1); i++) {
+  		last_dest = dest;
+  		
+  		for(j = 0; j < (d_x2 - d_x1); j+=2) {
+  			if(j == (d_x2 - d_x1 - 1) && ((d_x2 - d_x1) & 0x01) == 0x01) {
+  				// We have an ODD number of pixels left to draw.
+  				*(dest++) = (colour << 0x08) | 0x00;  			
+  			} else {
+  				// Let's draw 2 pixels at once.
+  				*(dest++) = (colour << 0x08) | (colour);
+  			}
+  			
+  			/**(dest++) = (colour << 0x08) | (colour);*/
+  		}
+  		
+  		// Go to next line.
+  		dest = last_dest + 160;
+  	}
 }
