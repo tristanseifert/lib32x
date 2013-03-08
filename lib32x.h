@@ -47,6 +47,7 @@ extern void lib32x_vbi_handler_flag();
 extern void lib32x_waitForVBlank();
 
 void lib32x_draw_rectangle(int x1, int y1, int x2, int y2, uint8 colour);
+void lib32x_draw_bitmap(uint8 *bitmap, int x, int y, int width, int height, uint8 colourOffset);
 
 // You *must* define this function somewhere in your code for the driver to work.
 extern void pwm_fill_buffer(int16 *buffer);

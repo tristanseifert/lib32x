@@ -344,7 +344,7 @@ void lib32x_draw_rectangle(int x1, int y1, int x2, int y2, uint8 colour) {
   				// We have an ODD number of pixels left to draw.
   				*(dest++) = (colour << 0x08) | 0x00;  			
   			} else {
-  				// Let's draw 2 pixels at once.
+  				// Let's draw 2 pixels at once — saves a ton of cycles over byte accesses.
   				*(dest++) = (colour << 0x08) | (colour);
   			}
   			
@@ -354,4 +354,41 @@ void lib32x_draw_rectangle(int x1, int y1, int x2, int y2, uint8 colour) {
   		// Go to next line.
   		dest = last_dest + 160;
   	}
+}
+/*****************************************************************************************
+ * Draws an 8bpp bitmap at the specified coordinates.									 *
+ *																						 *
+ * x, y: Top left coordinate for the bitmap.											 *
+ * height, width: Width/height of the bitmap, used to determine when to stop drawing	 *
+ * colourOffset: 8-bit offset to add to the colour value read from the bitmap.			 *
+ ****************************************************************************************/
+void lib32x_draw_bitmap(uint8 *bitmap, int x, int y, int width, int height, uint8 colourOffset) {
+	int o_width = width;
+	int o_height = height;
+	vu16 *dest, *last_dest; // Framebuffer destination
+	
+	int i, j;
+
+	// set up 16-bit write pointer to framebuffer
+  	dest = (vu16 *) &MARS_FRAMEBUFFER;
+  	dest += y * 160; // Bytes per line, but divided by 2 since 16-bit access
+  	dest += 0x100; // Offset to skip the line table
+  	dest += x / 2;
+  	
+	for(i = 0; i < height; i++) {
+  		last_dest = dest;
+  		
+		for(j = 0; j < width; j+=2) {
+  			if(j == width - 1 && (width & 0x01) == 0x01) {
+  				// We have an ODD number of pixels left to draw.
+  				*(dest++) = ((*bitmap++) << 0x08) | 0x00;  			
+  			} else {
+  				// Let's draw 2 pixels at once — saves a ton of cycles over byte accesses.
+  				*(dest++) = ((*bitmap++) << 0x08) | (*bitmap++);
+  			}			
+		}
+  		
+  		// Go to next line.
+  		dest = last_dest + 160;
+	}
 }
